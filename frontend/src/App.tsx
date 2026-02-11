@@ -1,12 +1,15 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import "./App.css";
 import { getTerms, saveTerms } from "./utils/storage";
 
 function App() {
   const [domain, setDomain] = useState("");
   const [text, setText] = useState("");
-  const [result, setResult] = useState("");
   const [hasOldVersion, setHasOldVersion] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState("");
+  const [modalBody, setModalBody] = useState("");
 
   useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -16,8 +19,6 @@ function App() {
       try {
         const domainName = new URL(url).hostname.replace("www.", "");
         setDomain(domainName);
-
-        // Check if we already have stored T&C for it
         getTerms(domainName).then((data) => setHasOldVersion(!!data));
       } catch (err) {
         console.error("Could not parse URL:", err);
@@ -25,154 +26,159 @@ function App() {
     });
   }, []);
 
-const summarize = async () => {
-  setLoading(true);
-  const res = await fetch("http://127.0.0.1:8000/api/summarize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ domain, text }),
-  });
-  const data = await res.json();
-  saveTerms(domain, text, data.summary);
+  useEffect(() => {
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsModalOpen(false);
+    };
 
-  setHasOldVersion(true);
+    if (isModalOpen) {
+      window.addEventListener("keydown", handleEsc);
+    }
 
-  console.log("🧠 Summary received:", data.summary);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [isModalOpen]);
 
-  // 🟢 Send to content script to show on webpage
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (tabs[0]?.id)
-      chrome.tabs.sendMessage(tabs[0].id, {
-        action: "showSummary",
-        summary: data.summary,
-      }, () => console.log("📤 Message sent to content script"));
-  });
-  setLoading(false);
-};
+  const openModal = (title: string, body: string) => {
+    setModalTitle(title);
+    setModalBody(body);
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => setIsModalOpen(false);
+
+  const summarize = async () => {
+    if (!text.trim()) {
+      openModal("Missing Input", "Please paste T&C text before summarizing.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain, text }),
+      });
+
+      const data = await res.json();
+      const summary = data.summary || "No summary returned.";
+      saveTerms(domain, text, summary);
+      setHasOldVersion(true);
+      openModal("Summary", summary);
+
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, {
+            action: "showSummary",
+            summary,
+          });
+        }
+      });
+    } catch (error) {
+      console.error("Summarize failed:", error);
+      openModal("Error", "Could not summarize right now. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const compare = async () => {
-    const existing = await getTerms(domain);
-
-    if (!existing) {
-      alert("No previous version found. Please summarize first.");
+    if (!text.trim()) {
+      openModal("Missing Input", "Please paste T&C text before comparing.");
       return;
     }
 
-    // Local quick check (avoid redundant API call)
+    const existing = await getTerms(domain);
+    if (!existing) {
+      openModal("No Previous Version", "Please summarize first.");
+      return;
+    }
+
     if (existing.raw === text) {
-      setResult("No changes detected - same as last version.");
-      
-      // ADD THIS - Show in overlay:
+      const noChangeMsg = "No changes detected - same as last version.";
+      openModal("Comparison Result", noChangeMsg);
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id)
+        if (tabs[0]?.id) {
           chrome.tabs.sendMessage(tabs[0].id, {
             action: "showSummary",
-            summary: "No changes detected – same as last version."
+            summary: noChangeMsg,
           });
+        }
       });
-      
       return;
     }
 
-    const res = await fetch("http://127.0.0.1:8000/api/compare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ domain, text }),
-    });
+    setLoading(true);
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain, text }),
+      });
 
-    const data = await res.json();
-    const newSummary = data.summary || "";
-    setResult(data.analysis || "Changes found – new summary:\n\n" + newSummary);
-    saveTerms(domain, text, newSummary);
-    
-    // ADD THIS - Show comparison in overlay:
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id)
-        chrome.tabs.sendMessage(tabs[0].id, {
-          action: "showSummary",
-          summary: data.analysis || "Changes found – new summary:\n\n" + newSummary
-        });
-    });
+      const data = await res.json();
+      const newSummary = data.summary || "";
+      const output = data.analysis || `Changes found - new summary:\n\n${newSummary}`;
+      saveTerms(domain, text, newSummary);
+      openModal("Comparison Result", output);
+
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, {
+            action: "showSummary",
+            summary: output,
+          });
+        }
+      });
+    } catch (error) {
+      console.error("Compare failed:", error);
+      openModal("Error", "Could not compare right now. Try again.");
+    } finally {
+      setLoading(false);
+    }
   };
-  /*const compare = async () => {
-    const existing = await getTerms(domain);
-
-    
-
-    if (!existing) {
-      alert("No previous version found. Please summarize first.");
-      return;
-    }
-
-    // Local quick check (avoid redundant API call)
-    if (existing.raw === text) {
-      setResult("No changes detected — same as last version.");
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id)
-          chrome.tabs.sendMessage(tabs[0].id, {
-            action: "showSummary",
-            summary: noChangeMsg
-          });
-      });
-      return;
-    }
-
-    const res = await fetch("http://127.0.0.1:8000/api/compare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ domain, text }),
-    });
-
-    const data = await res.json();
-    const newSummary = data.summary || "";
-    setResult(data.analysis || "Changes found — new summary:\n\n" + newSummary);
-    saveTerms(domain, text, newSummary);
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id)
-        chrome.tabs.sendMessage(tabs[0].id, {
-          action: "showSummary",
-          summary: analysis
-        });
-    });
-  };*/
 
   return (
-    <div style={{ padding: 15, width: 320, fontFamily: "sans-serif" }}>
-      <h3>T&C Change Detector</h3>
+    <div className="popup-shell">
+      <h3 className="app-title">T&C Change Detector</h3>
 
-      <div
-    style={{
-    background: "#f2f2f2",
-    padding: "8px",
-    borderRadius: "6px",
-    fontSize: "14px",
-    marginBottom: "10px",
-    color: "#333",
-    textAlign: "center",
-    wordBreak: "break-all"
-  }}
->
-  🌐 {domain || "Detecting site..."}
-</div>
+      <div className="domain-pill">
+        <span className="domain-icon" aria-hidden="true">
+          o
+        </span>
+        <span>{domain || "Detecting site..."}</span>
+      </div>
 
       <textarea
+        className="input-text"
         placeholder="Paste T&C text here"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={5}
-        style={{ width: "100%", marginBottom: 10 }}
+        rows={6}
       />
 
       {!hasOldVersion ? (
-      <button onClick={summarize}>Summarize</button>
+        <button className="primary-btn" onClick={summarize} disabled={loading}>
+          {loading ? "Summarizing..." : "Summarize"}
+        </button>
       ) : (
-      <button onClick={compare}>Compare</button>
-  )}
+        <button className="primary-btn" onClick={compare} disabled={loading}>
+          {loading ? "Comparing..." : "Compare"}
+        </button>
+      )}
 
-      {result && (
-        <pre style={{ marginTop: 15, fontSize: 13, whiteSpace: "pre-wrap" }}>
-          {result}
-        </pre>
+      {isModalOpen && (
+        <div className="modal-backdrop" onClick={closeModal}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h4>{modalTitle}</h4>
+              <button className="icon-btn" onClick={closeModal} aria-label="Close modal">
+                x
+              </button>
+            </div>
+            <pre className="modal-body">{modalBody}</pre>
+          </div>
+        </div>
       )}
     </div>
   );
