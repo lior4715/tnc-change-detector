@@ -21,7 +21,7 @@ async def summarize_text(text: str) -> str:
     prompt = (
         f"The following Terms and Conditions are written in {lang}. "
         f"Translate them into English only if they are not already written in {lang}, then summarize them into concise, factual bullet points, "
-        f"keeping legal meaning accurate and clear.\n\n"
+        f"keeping legal meaning accurate and clear. keep the number of bullet points under 10, preferably use less if you can and focus on the most important points.\n\n"
         f"{text}"
     )
 
