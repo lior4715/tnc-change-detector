@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "T&C Change Detector",
+  "version": "1.0",
+  "description": "Detect and summarize changes in Terms & Conditions pages.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8000/*"],
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "T&C Change Detector"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
